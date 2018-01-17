@@ -16,6 +16,19 @@ typedef struct DoubleComplex {
     double imaginary;
 } DoubleComplex;
 
+typedef struct InterpolationPoint {
+    float xShift;
+    float yShift;
+    DoubleComplex weight;
+} InterpolationPoint;
+
+double getShift(double width);
+float getStartShift(float width);
+float calcShift(int index, int width);
+int calcPosition(float x, int scalerWidth);
+InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, InterpolationPoint newPoint, int start, int width, bool horizontal);
+void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kernelFullSupport, int interpFullSupport, DoubleComplex* matrix);
+
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fieldOfViewDegrees);
 void createPhaseScreen(int convSize, DoubleComplex *wScreen, double* spheroidal, double w, double fieldOfView, double sphrMax);
 void calcSpheroidalCurve(double *nu, double *curve, int width);
