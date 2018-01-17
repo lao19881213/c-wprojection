@@ -12,18 +12,16 @@
     #define M_PI 3.14159265358979323846264338327
 #endif
 
-// NOTE TO SELF: THIS ALGORITHM ACTUALLY WORKS.
-
 int gridSize = 18000;
 double kernelMaxFullSupport = 16.0;
 double kernelMinFullSupport = 16.0;
 
-int kernelTextureSize = 16;
-int kernelResolutionSize = 16;
+int kernelTextureSize = 32;
+int kernelResolutionSize = 32;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
-double maxW = 1000.0;
+double maxW = 7000.0;
 double wScale = 0.0;
 int numWPlanes = 0;
 
@@ -41,15 +39,12 @@ int main(int argc, char** argv)
 }
 
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
-{            
-    double start = -0.5f;
-    double step = 1.0f/(double) convolutionSize;
-    
+{                
     double *nu = calloc(convolutionSize, sizeof(double));
     double *spheroidal = calloc(convolutionSize, sizeof(double));
     // Calculate steps
     for(int i = 0; i < convolutionSize; i++)
-        nu[i] = fabs(2.0 * (start+(i*step)));
+        nu[i] = fabs(calcShift(i, convolutionSize));
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, spheroidal, convolutionSize);
@@ -80,6 +75,24 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
         fft2dShift(convolutionSize, screen, shift);
         
+        if(iw == 0)
+        {
+            // Print to file
+            char *buffer[100];
+            sprintf(buffer, "wproj_%d.csv", convolutionSize);
+            FILE *file = fopen(buffer, "w");
+            for(int r = 0; r < convolutionSize; r++)
+            {
+                for(int c = 0; c < convolutionSize; c++)
+                {
+                    fprintf(file, "%f, ", shift[r * convolutionSize + c].real);
+                }
+                fprintf(file, "\n");
+            }
+            fclose(file);
+            printf("FILE SAVED\n");
+        }
+        
         // Reallocate wKernel for mirroring missing row/cols
         DoubleComplex *temp = realloc(screen, (convolutionSize+1) * (convolutionSize+1) * sizeof(DoubleComplex));
         if(temp)
@@ -105,24 +118,98 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
             }
         }
         
-        // Trim kernels to texture dimensions
-        int kernelCenter = (convolutionSize / 2);
-        for(int r = 0; r < textureSupport; r++)
+        
+        
+        
+        // Locate the support size of kernel stepping in from edge (evaluates magnitude of complex weight)
+        double minThreshold = 0.001;
+        int convHalf = convolutionSize/2;
+        int centerIndex = (convolutionSize*convolutionSize/2) + convHalf;
+        printf("Center: %d\n", centerIndex);
+        int trialIndex = centerIndex - convHalf;
+        int interpStart;
+        for(interpStart = trialIndex; interpStart < centerIndex; interpStart++)
         {
-            int kernelRowIndex = (kernelCenter + r) - (textureSupport/2);
-
-            for(int c = 0; c < textureSupport; c++)
-            {
-                int kernelColIndex = (kernelCenter + c) - (textureSupport/2);
-                int index = wTextureIndex(c, r, iw, textureSupport);
-                // Normal assignment
-                wTextures[index] = (FloatComplex) {.real = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].real,
-                    .imaginary = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].imaginary};
-
-//                printf("%4.10f%+4.10f ", wTextures[index].real, wTextures[index].imaginary);
-
-            }
+            double magnitude = screen[interpStart].real;//sqrt(screen[interpStart].real * screen[interpStart].real + screen[interpStart].imaginary * screen[interpStart].imaginary);
+            //printf("%d: Val: %f\n", interpStart, magnitude);
+            if(magnitude > minThreshold)
+                break;
         }
+        
+        int interpHalf = centerIndex - interpStart;
+        int interpWidth = interpHalf * 2 + 1;
+        interpStart -= (convolutionSize * (interpWidth/2));
+        
+        // Allocate memory for sub array and copy
+        DoubleComplex *subArray = calloc(interpWidth * interpWidth, sizeof(DoubleComplex));
+        for(int r = 0; r < interpWidth; r++)
+        {
+            for(int c = 0; c < interpWidth; c++)
+            {
+                int interpIndex = interpStart + c + (convolutionSize * r);
+                subArray[r * interpWidth + c] = screen[interpIndex];
+//                if(iw == 0)
+//                    printf("%d ", interpIndex);
+            }   
+//            if(iw == 0)
+//                printf("\n");
+        }
+        
+        InterpolationPoint neighbours[16];
+        InterpolationPoint interpolated[4];
+        
+        float xShift, yShift, shift2;
+        shift2 = getShift(convolutionSize);
+        // Interpolate projection screen into texture
+        for(int y = 0; y < textureSupport; y++)
+        {
+            yShift = calcShift(y, textureSupport);
+            
+            for(int x = 0; x < textureSupport; x++)
+            {
+                xShift = calcShift(x, textureSupport);
+                getBicubicNeighbours(x, y, neighbours, interpWidth, textureSupport, subArray);
+                
+                for(int i  = 0, j = -1; i < 4; i++, j++)
+                {
+                    InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
+                    newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpWidth, true);
+                    interpolated[i] = newPoint;
+                }
+                
+                InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
+                final = interpolateCubicWeight(interpolated, final, 0, interpWidth, false);
+                int index = wTextureIndex(x, y, iw, textureSupport);
+                wTextures[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
+                if(iw == numWPlanes-1)
+                    printf("%f ", wTextures[index].real);
+            }
+            
+            if(iw == numWPlanes-1)
+                printf("\n");
+        }
+        
+        free(subArray);
+        
+        
+//        // Trim kernels to texture dimensions
+//        int kernelCenter = (convolutionSize / 2);
+//        for(int r = 0; r < textureSupport; r++)
+//        {
+//            int kernelRowIndex = (kernelCenter + r) - (textureSupport/2);
+//
+//            for(int c = 0; c < textureSupport; c++)
+//            {
+//                int kernelColIndex = (kernelCenter + c) - (textureSupport/2);
+//                int index = wTextureIndex(c, r, iw, textureSupport);
+//                // Normal assignment
+//                wTextures[index] = (FloatComplex) {.real = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].real,
+//                    .imaginary = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].imaginary};
+//
+////                printf("%4.10f%+4.10f ", wTextures[index].real, wTextures[index].imaginary);
+//
+//            }
+//        }
         
         memset(screen, 0, convolutionSize * convolutionSize * sizeof(DoubleComplex));
         memset(shift, 0, convolutionSize * convolutionSize * sizeof(DoubleComplex));
@@ -131,26 +218,23 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     free(spheroidal);
     free(screen);
     free(shift);
-
     
-    for(int iw = 0; iw < numWPlanes; iw++)
-    {
-        for(int iy = 0; iy < textureSupport; iy++)
-        {
-            for(int ix = 0; ix < textureSupport; ix++)
-            {
-                int i = wTextureIndex(ix, iy, iw, textureSupport);
-                
-                if(iw == 0)
-                    printf("%.20f, ", wTextures[i].real);
-            }
-            
-            if(iw == 0)
-                printf("\n");
-        }
-    }
-    
-    printf("FINISHED M8\n");
+//    for(int iw = 0; iw < numWPlanes; iw++)
+//    {
+//        for(int iy = 0; iy < textureSupport; iy++)
+//        {
+//            for(int ix = 0; ix < textureSupport; ix++)
+//            {
+//                int i = wTextureIndex(ix, iy, iw, textureSupport);
+//                
+//                if(iw == 0)
+//                    printf("%.20f, ", wTextures[i].real);
+//            }
+//            
+//            if(iw == 0)
+//                printf("\n");
+//        }
+//    }
     
     free(wTextures);
 }
@@ -402,3 +486,83 @@ void fft2dShift(int n, DoubleComplex *input, DoubleComplex *shifted)
         c = 0;
     }
 }
+
+InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, InterpolationPoint newPoint, int start, int width, bool horizontal)
+{      
+    // Convert to double?
+    double shiftCubed = pow(getShift(width), 3);
+
+    DoubleComplex p0 = (DoubleComplex) {.real = (horizontal) ? points[start+0].xShift : points[start+0].yShift, .imaginary = 0.0};
+    DoubleComplex p1 = (DoubleComplex) {.real = (horizontal) ? points[start+1].xShift : points[start+1].yShift, .imaginary = 0.0};
+    DoubleComplex p2 = (DoubleComplex) {.real = (horizontal) ? points[start+2].xShift : points[start+2].yShift, .imaginary = 0.0};
+    DoubleComplex p3 = (DoubleComplex) {.real = (horizontal) ? points[start+3].xShift : points[start+3].yShift, .imaginary = 0.0};
+    DoubleComplex interpShift = (DoubleComplex) {.real = (horizontal) ? newPoint.xShift : newPoint.yShift, .imaginary = 0.0};
+    
+    DoubleComplex w0 = (DoubleComplex) {.real = -(points[start+0].weight.real) / (6.0 * shiftCubed), 
+            .imaginary = -(points[start+0].weight.imaginary) / (6.0 * shiftCubed)};
+    DoubleComplex w1 = (DoubleComplex) {.real = points[start+1].weight.real / (2.0 * shiftCubed),
+            .imaginary = points[start+1].weight.imaginary / (2.0 * shiftCubed)};
+    DoubleComplex w2 = (DoubleComplex) {.real = -points[start+2].weight.real / (2.0 * shiftCubed), 
+            .imaginary = -points[start+2].weight.imaginary / (2.0 * shiftCubed)};
+    DoubleComplex w3 = (DoubleComplex) {.real = points[start+3].weight.real / (6.0 * shiftCubed), 
+            .imaginary = points[start+3].weight.imaginary / (6.0 * shiftCubed)}; 
+    
+    // Refactor for complex multiplication and subtraction
+    DoubleComplex t0 = complexMultiply(complexMultiply(complexMultiply(w0, complexSubtract(interpShift, p1)), complexSubtract(interpShift, p2)), 
+            complexSubtract(interpShift, p3));
+    DoubleComplex t1 = complexMultiply(complexMultiply(complexMultiply(w1, complexSubtract(interpShift, p0)), complexSubtract(interpShift, p2)), 
+            complexSubtract(interpShift, p3));
+    DoubleComplex t2 = complexMultiply(complexMultiply(complexMultiply(w2, complexSubtract(interpShift, p0)), complexSubtract(interpShift, p1)),
+            complexSubtract(interpShift, p3));
+    DoubleComplex t3 = complexMultiply(complexMultiply(complexMultiply(w3, complexSubtract(interpShift, p0)), complexSubtract(interpShift, p1)), 
+            complexSubtract(interpShift, p2));
+    // Refactor for complex addition
+    newPoint.weight = complexAdd(complexAdd(complexAdd(t0, t1), t2), t3);
+    return newPoint;
+}
+
+void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kernelFullSupport, int interpFullSupport, DoubleComplex* matrix)
+{
+    // Transform x, y into scaled shift
+    float shiftX = calcShift(x, interpFullSupport);
+    float shiftY = calcShift(y, interpFullSupport);
+    // Get x, y from scaled shift 
+    int scaledPosX = calcPosition(shiftX, kernelFullSupport);
+    int scaledPosY = calcPosition(shiftY, kernelFullSupport);
+    // Get 16 neighbours
+    for(int r = scaledPosY - 1, i = 0; r < scaledPosY + 3; r++)
+    {
+        for(int c = scaledPosX - 1; c < scaledPosX + 3; c++)
+        {
+            InterpolationPoint n = (InterpolationPoint) {.xShift = calcShift(c, kernelFullSupport), .yShift = calcShift(r, kernelFullSupport)};
+            
+            if(c < 0 || c > kernelFullSupport || r < 0 || r > kernelFullSupport)
+                n.weight = (DoubleComplex) {.real = 0.0, .imaginary = 0.0};
+            else
+                n.weight = matrix[r * kernelFullSupport + c];
+            
+            neighbours[i++] = n;
+        }
+    }
+}
+
+float calcShift(int index, int width)
+{
+    return getStartShift(width) + index * getShift(width);
+}
+
+double getShift(double width)
+{
+    return 2.0/width;
+}
+
+float getStartShift(float width)
+{
+    return -1.0 + (1.0 / width);
+}
+
+int calcPosition(float x, int scalerWidth)
+{
+    return (int) floor(((x+1.0f)/2.0f) * (scalerWidth));
+}
+

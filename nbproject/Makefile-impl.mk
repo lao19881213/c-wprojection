@@ -24,7 +24,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 
 
 # Project Name
-PROJECTNAME=WProjection
+PROJECTNAME=Wprojection
 
 # Active Configuration
 DEFAULTCONF=Debug
