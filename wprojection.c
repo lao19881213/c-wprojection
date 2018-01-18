@@ -13,32 +13,41 @@
 #endif
 
 int gridSize = 18000;
-double kernelMaxFullSupport = 16.0;
-double kernelMinFullSupport = 16.0;
+double kernelMaxFullSupport = 128.0;
+double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 32;
-int kernelResolutionSize = 32;
+int kernelTextureSize = 256;
+int kernelResolutionSize = 128;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
 double maxW = 7000.0;
 double wScale = 0.0;
 int numWPlanes = 0;
+float wToMaxSupportRatio = 0.0;
 
 int main(int argc, char** argv) 
 {
     numWPlanes = (int)(maxW * fabs(sin(cellsizeRad * (double)gridSize / 2.0)));
     fieldOfViewDegrees = gridSize * cellsizeRad;
     wScale = pow(numWPlanes - 1, 2.0) / maxW;
+    wToMaxSupportRatio = (kernelMaxFullSupport - kernelMinFullSupport) / maxW;
     
-    printf("Num Planes: %d\n", numWPlanes);
+    printf("Num Planes: %f\n",wScale);
     
-    createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees);
+    createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees, wToMaxSupportRatio, kernelMinFullSupport);
     
     return (EXIT_SUCCESS);
 }
 
-void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
+double calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport)
+{
+    // Calculates the full support width of a kernel for w term
+    return fabs(wToMaxSupportRatio * w) + minSupport;
+}
+
+void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov,
+        double wToMaxSupportRatio, double kernelMinSupport)
 {                
     double *nu = calloc(convolutionSize, sizeof(double));
     double *spheroidal = calloc(convolutionSize, sizeof(double));
@@ -48,7 +57,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, spheroidal, convolutionSize);
-
+    
     double sphrMax = -DBL_MAX;
     for(int r = 0; r < convolutionSize; r++)
         for(int c = 0; c < convolutionSize; c++)
@@ -63,23 +72,27 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     // Create w screen
     DoubleComplex *shift = calloc(convolutionSize * convolutionSize, sizeof(DoubleComplex));
     
+    // numWPlanes = 1;
     for(int iw = 0; iw < numWPlanes; iw++)
     {        
         double w = iw * iw / wScale;
         double fresnel = w * ((0.5 * fov)*(0.5 * fov));
         printf("CreateWTermLike: For w = %f, field of view = %f, fresnel number = %f\n", w, fov, fresnel);
-        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, sphrMax);
+        double fovScale = 1.0;//(double) convolutionSize / calcWFullSupport(w, wToMaxSupportRatio, kernelMinSupport);
+        printf("FOV Scale: %f\n", fovScale);
+        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, sphrMax, fovScale);
         
         // Shift FFT for transformation
         fft2dShift(convolutionSize, screen, shift);
         inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
         fft2dShift(convolutionSize, screen, shift);
         
+                
         if(iw == 0)
         {
             // Print to file
             char *buffer[100];
-            sprintf(buffer, "wproj_%d.csv", convolutionSize);
+            sprintf(buffer, "wproj_screen_blah_%d.csv", convolutionSize);
             FILE *file = fopen(buffer, "w");
             for(int r = 0; r < convolutionSize; r++)
             {
@@ -181,12 +194,12 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
                 final = interpolateCubicWeight(interpolated, final, 0, interpWidth, false);
                 int index = wTextureIndex(x, y, iw, textureSupport);
                 wTextures[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
-                if(iw == numWPlanes-1)
-                    printf("%f ", wTextures[index].real);
+//                if(iw == 0)
+//                    printf("%f ", wTextures[index].real);
             }
             
-            if(iw == numWPlanes-1)
-                printf("\n");
+//            if(iw == 0)
+//                printf("\n");
         }
         
         free(subArray);
@@ -245,7 +258,7 @@ int wTextureIndex(int x, int y, int z, int n)
     return ((z)*n*n) + ((y)*n) + (x);
 }
 
-void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, double taperMax)
+void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, double taperMax, float fovScale)
 {        
     int convHalf = convSize/2;
     int index = 0;
@@ -254,33 +267,42 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
     double lsq, rsq;
     double phase;
     
+    int panicCounter = 0;
+    
     for(int iy = 0; iy < convSize; iy++)
     {
-        l = (((double) iy-convHalf) / (double) convSize) * fieldOfView;
+        l = (((double) iy-(convHalf+0.5)) / (double) convSize) * fieldOfView * fovScale;
         lsq = l*l;
         taperY = spheroidal[iy];
         phase = 0.0;
         
         for(int ix = 0; ix < convSize; ix++)
         {
-            m = (((double) ix-convHalf) / (double) convSize) * fieldOfView;
+            m = (((double) ix-(convHalf+0.5)) / (double) convSize) * fieldOfView * fovScale;
             rsq = lsq+(m*m);
             taper = taperMax / (taperY * spheroidal[ix]);
             index = iy * convSize + ix;
             
             if(rsq < 1.0)
+            {
                 phase = w * (1.0 - sqrt(1.0 - rsq));
-            
-            if(rsq < 1.0)
                 screen[index] = complexConjugateExp(phase);
+            }
             
             if(rsq == 0.0)
                 screen[index] = (DoubleComplex) {.real = 1.0, .imaginary = 0.0};
+            
+            // Bug fix: what happens when W = 0?
+                
+            if(rsq >= 1.0)
+                panicCounter++;
                 
             screen[index].real /= taper;
             screen[index].imaginary /= taper;
         }
     }
+    if(panicCounter > 0)
+        printf("You have panicked a total of %d times, god damn!\n", panicCounter);
 }
 
 void inverseFFT2dVectorRadixTransform(int numChannels, DoubleComplex *input, DoubleComplex *output)
