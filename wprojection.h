@@ -29,9 +29,10 @@ int calcPosition(float x, int scalerWidth);
 InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, InterpolationPoint newPoint, int start, int width, bool horizontal);
 void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kernelFullSupport, int interpFullSupport, DoubleComplex* matrix);
 
-double calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport);
-void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov, double wToMaxSupportRatio, double kernelMinSupport);
-void createPhaseScreen(int convSize, DoubleComplex *wScreen, double* spheroidal, double w, double fieldOfView, double sphrMax, float fovScale);
+void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf);
+int calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport);
+void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov);
+void createPhaseScreen(int convSize, DoubleComplex *wScreen, double* spheroidal, double w, double fieldOfView, double sphrMax, int scalarSupport);
 void calcSpheroidalCurve(double *nu, double *curve, int width);
 void inverseFFT2dVectorRadixTransform(int numChannels, DoubleComplex *input, DoubleComplex *output);
 void calcBitReversedIndices(int n, int* indices);

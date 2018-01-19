@@ -16,8 +16,8 @@ int gridSize = 18000;
 double kernelMaxFullSupport = 128.0;
 double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 256;
-int kernelResolutionSize = 128;
+int kernelTextureSize = 32;
+int kernelResolutionSize = 512;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -26,73 +26,95 @@ double wScale = 0.0;
 int numWPlanes = 0;
 float wToMaxSupportRatio = 0.0;
 
-int main(int argc, char** argv) 
-{
+int main(int argc, char** argv)
+{   
     numWPlanes = (int)(maxW * fabs(sin(cellsizeRad * (double)gridSize / 2.0)));
     fieldOfViewDegrees = gridSize * cellsizeRad;
     wScale = pow(numWPlanes - 1, 2.0) / maxW;
     wToMaxSupportRatio = (kernelMaxFullSupport - kernelMinFullSupport) / maxW;
     
-    printf("Num Planes: %f\n",wScale);
+    //testWDimensions();
     
-    createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees, wToMaxSupportRatio, kernelMinFullSupport);
+    createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees);
     
     return (EXIT_SUCCESS);
 }
 
-double calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport)
+//void testWDimensions(void)
+//{
+//    for(int iw = 0; iw < numWPlanes; iw++)
+//    {
+//        double w = iw * iw / wScale;
+//        int support = (int) (fabs(wToMaxSupportRatio * w) + kernelMinFullSupport);
+//        printf("W: %f, Support: %d\n", w, support);
+//    }
+//}
+
+int calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport)
 {
     // Calculates the full support width of a kernel for w term
-    return fabs(wToMaxSupportRatio * w) + minSupport;
+    return (int) (fabs(wToMaxSupportRatio * w) + minSupport);
 }
 
-void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov,
-        double wToMaxSupportRatio, double kernelMinSupport)
+void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
 {                
-    double *nu = calloc(convolutionSize, sizeof(double));
-    double *spheroidal = calloc(convolutionSize, sizeof(double));
-    // Calculate steps
-    for(int i = 0; i < convolutionSize; i++)
-        nu[i] = fabs(calcShift(i, convolutionSize));
-        
-    // Calculate curve from steps
-    calcSpheroidalCurve(nu, spheroidal, convolutionSize);
-    
-    double sphrMax = -DBL_MAX;
-    for(int r = 0; r < convolutionSize; r++)
-        for(int c = 0; c < convolutionSize; c++)
-            if(spheroidal[r] * spheroidal[c] > sphrMax)
-                sphrMax = spheroidal[r] * spheroidal[c];
-    free(nu);   
-    
+    int convHalf = convolutionSize/2;
     // Flat two dimension array
     DoubleComplex *screen = calloc(convolutionSize * convolutionSize, sizeof(DoubleComplex));
     // Flat cube array (numWPlanes * texFullSupport^2)
     FloatComplex *wTextures = calloc(numWPlanes * textureSupport * textureSupport, sizeof(FloatComplex));
     // Create w screen
     DoubleComplex *shift = calloc(convolutionSize * convolutionSize, sizeof(DoubleComplex));
+    // Single dimension spheroidal
+    double *spheroidal = calloc(convolutionSize, sizeof(double));
     
     // numWPlanes = 1;
     for(int iw = 0; iw < numWPlanes; iw++)
     {        
+        // Calculate w term and w specific support size
         double w = iw * iw / wScale;
-        double fresnel = w * ((0.5 * fov)*(0.5 * fov));
-        printf("CreateWTermLike: For w = %f, field of view = %f, fresnel number = %f\n", w, fov, fresnel);
-        double fovScale = 1.0;//(double) convolutionSize / calcWFullSupport(w, wToMaxSupportRatio, kernelMinSupport);
-        printf("FOV Scale: %f\n", fovScale);
-        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, sphrMax, fovScale);
+        int wFullSupport = calcWFullSupport(w, wToMaxSupportRatio, kernelMinFullSupport);
+        printf("FullSupport: %d\n", wFullSupport);
+        // Calculate Prolate Spheroidal
+        createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
+        // Find the max weight for normalization
+        double sphrMax = -DBL_MAX;
+        for(int r = 0; r < convolutionSize; r++)
+            for(int c = 0; c < convolutionSize; c++)
+                if(spheroidal[r] * spheroidal[c] > sphrMax)
+                    sphrMax = spheroidal[r] * spheroidal[c];
         
-        // Shift FFT for transformation
-        fft2dShift(convolutionSize, screen, shift);
-        inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
-        fft2dShift(convolutionSize, screen, shift);
+        // Create Phase Screen
+        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, sphrMax, wFullSupport);
         
-                
         if(iw == 0)
         {
             // Print to file
             char *buffer[100];
-            sprintf(buffer, "wproj_screen_blah_%d.csv", convolutionSize);
+            sprintf(buffer, "wproj_kernel_before_%d.csv", convolutionSize);
+            FILE *file = fopen(buffer, "w");
+            for(int r = 0; r < convolutionSize; r++)
+            {
+                for(int c = 0; c < convolutionSize; c++)
+                {
+                    fprintf(file, "%f, ", screen[r * convolutionSize + c].real);
+                }
+                fprintf(file, "\n");
+            }
+            fclose(file);
+            printf("FILE SAVED\n");
+        }
+        
+        // Perform shift and inverse FFT of Phase Screen
+        fft2dShift(convolutionSize, screen, shift);
+        inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
+        fft2dShift(convolutionSize, screen, shift);
+        
+        if(iw == 0)
+        {
+            // Print to file
+            char *buffer[100];
+            sprintf(buffer, "wproj_kernel_after_%d.csv", convolutionSize);
             FILE *file = fopen(buffer, "w");
             for(int r = 0; r < convolutionSize; r++)
             {
@@ -105,37 +127,38 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
             fclose(file);
             printf("FILE SAVED\n");
         }
-        
-        // Reallocate wKernel for mirroring missing row/cols
-        DoubleComplex *temp = realloc(screen, (convolutionSize+1) * (convolutionSize+1) * sizeof(DoubleComplex));
-        if(temp)
-            // does temp become NULL?
-            screen = temp;
-        else
-            printf("ERR: Unable to reallocate wKernel\n");
-        
-        // Append to list of kernels
-        for(int r = 0; r < convolutionSize + 1; r++)
-        {
-            for(int c = 0; c < convolutionSize + 1; c++)
-            {   
-                // Copy existing weights
-                if(r < convolutionSize && c < convolutionSize)
-                    screen[r * convolutionSize + c] = shift[r * convolutionSize + c];
-                // Mirror top row onto bottom row
-                if(r == convolutionSize && c < convolutionSize)
-                    screen[r * convolutionSize + c] = screen[0 * convolutionSize + c];
-                // Mirror far left col weight onto far right col
-                if(c == convolutionSize)
-                    screen[r * convolutionSize + c] = screen[r * convolutionSize + 0];
-            }
-        }
+  
+        // Redundant? Probably...
+//        // Reallocate wKernel for mirroring missing row/cols
+//        DoubleComplex *temp = realloc(screen, (convolutionSize+1) * (convolutionSize+1) * sizeof(DoubleComplex));
+//        if(temp)
+//            // does temp become NULL?
+//            screen = temp;
+//        else
+//            printf("ERR: Unable to reallocate wKernel\n");
+//        
+//        // Append to list of kernels
+//        for(int r = 0; r < convolutionSize + 1; r++)
+//        {
+//            for(int c = 0; c < convolutionSize + 1; c++)
+//            {   
+//                // Copy existing weights
+//                if(r < convolutionSize && c < convolutionSize)
+//                    screen[r * convolutionSize + c] = shift[r * convolutionSize + c];
+//                // Mirror top row onto bottom row
+//                if(r == convolutionSize && c < convolutionSize)
+//                    screen[r * convolutionSize + c] = screen[0 * convolutionSize + c];
+//                // Mirror far left col weight onto far right col
+//                if(c == convolutionSize)
+//                    screen[r * convolutionSize + c] = screen[r * convolutionSize + 0];
+//            }
+//        }
         
         
         
         
         // Locate the support size of kernel stepping in from edge (evaluates magnitude of complex weight)
-        double minThreshold = 0.001;
+        double minThreshold = 0.000001;
         int convHalf = convolutionSize/2;
         int centerIndex = (convolutionSize*convolutionSize/2) + convHalf;
         printf("Center: %d\n", centerIndex);
@@ -162,7 +185,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
                 int interpIndex = interpStart + c + (convolutionSize * r);
                 subArray[r * interpWidth + c] = screen[interpIndex];
 //                if(iw == 0)
-//                    printf("%d ", interpIndex);
+                    printf("%d ", interpIndex);
             }   
 //            if(iw == 0)
 //                printf("\n");
@@ -194,12 +217,12 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
                 final = interpolateCubicWeight(interpolated, final, 0, interpWidth, false);
                 int index = wTextureIndex(x, y, iw, textureSupport);
                 wTextures[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
-//                if(iw == 0)
-//                    printf("%f ", wTextures[index].real);
+                if(iw == 0)
+                    printf("%f ", wTextures[index].real);
             }
             
-//            if(iw == 0)
-//                printf("\n");
+            if(iw == 0)
+                printf("\n");
         }
         
         free(subArray);
@@ -258,9 +281,27 @@ int wTextureIndex(int x, int y, int z, int n)
     return ((z)*n*n) + ((y)*n) + (x);
 }
 
-void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, double taperMax, float fovScale)
+void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
+{
+    int wHalfSupport = wFullSupport/2;
+    double *nu = calloc(wFullSupport, sizeof(double));
+    double *tempSpheroidal = calloc(wFullSupport, sizeof(double));
+    // Calculate steps
+    for(int i = 0; i < wFullSupport; i++)
+        nu[i] = fabs(calcShift(i, wFullSupport));
+    // Calculate curve from steps
+    calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
+    // Bind weights to middle
+    for(int i = convHalf-wHalfSupport; i < convHalf+wHalfSupport; i++)
+        spheroidal[i] = tempSpheroidal[i-(convHalf-wHalfSupport)];
+    free(tempSpheroidal);
+    free(nu);
+}
+
+void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, double taperMax, int scalarSupport)
 {        
     int convHalf = convSize/2;
+    int scalarHalf = scalarSupport/2;
     int index = 0;
     double taper, taperY;
     double l, m;
@@ -269,19 +310,19 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
     
     int panicCounter = 0;
     
-    for(int iy = 0; iy < convSize; iy++)
+    for(int iy = 0; iy < scalarSupport; iy++)
     {
-        l = (((double) iy-(convHalf+0.5)) / (double) convSize) * fieldOfView * fovScale;
+        l = (((double) iy-(scalarHalf+0.5)) / (double) scalarSupport) * fieldOfView;
         lsq = l*l;
-        taperY = spheroidal[iy];
+        taperY = spheroidal[iy+(convHalf-scalarHalf)];
         phase = 0.0;
         
-        for(int ix = 0; ix < convSize; ix++)
+        for(int ix = 0; ix < scalarSupport; ix++)
         {
-            m = (((double) ix-(convHalf+0.5)) / (double) convSize) * fieldOfView * fovScale;
+            m = (((double) ix-(scalarHalf+0.5)) / (double) scalarSupport) * fieldOfView;
             rsq = lsq+(m*m);
-            taper = taperMax / (taperY * spheroidal[ix]);
-            index = iy * convSize + ix;
+            taper = taperMax / (taperY * spheroidal[ix+(convHalf-scalarHalf)]);
+            index = (iy+(convHalf-scalarHalf)) * convSize + (ix+(convHalf-scalarHalf));
             
             if(rsq < 1.0)
             {
