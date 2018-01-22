@@ -12,12 +12,20 @@
     #define M_PI 3.14159265358979323846264338327
 #endif
 
+// Adams TODO list:
+// -- experiment with the growth of resolutionSize vs scalarSupport
+// -- change normalization so that the taper is no longer normalized, 
+//    but the kernel after FFT is normalized by resolutionSize/scalarSupport
+// -- Detecting min threshold for kernel extraction prior to bicubic interpolation
+//    will be performed by some form of factoring - use of wToMaxSupportRatio and
+//    relation to resolution size. eg: 128 (width) and 7 (support)
+
 int gridSize = 18000;
 double kernelMaxFullSupport = 128.0;
 double kernelMinFullSupport = 7.0;
 
 int kernelTextureSize = 32;
-int kernelResolutionSize = 512;
+int kernelResolutionSize = 128;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -33,27 +41,46 @@ int main(int argc, char** argv)
     wScale = pow(numWPlanes - 1, 2.0) / maxW;
     wToMaxSupportRatio = (kernelMaxFullSupport - kernelMinFullSupport) / maxW;
     
-    //testWDimensions();
-    
     createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees);
     
     return (EXIT_SUCCESS);
 }
 
-//void testWDimensions(void)
-//{
-//    for(int iw = 0; iw < numWPlanes; iw++)
-//    {
-//        double w = iw * iw / wScale;
-//        int support = (int) (fabs(wToMaxSupportRatio * w) + kernelMinFullSupport);
-//        printf("W: %f, Support: %d\n", w, support);
-//    }
-//}
-
 int calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport)
 {
     // Calculates the full support width of a kernel for w term
     return (int) (fabs(wToMaxSupportRatio * w) + minSupport);
+}
+
+void normalizeKernel(DoubleComplex *kernel, int resolution, int support)
+{
+    // Get sum of magnitudes
+    double magnitudeSum;
+    int r, c;
+    for(r = 0; r < resolution; r++)
+        for(c = 0; c < resolution; c++)
+            magnitudeSum += complexMagnitude(kernel[r * resolution + c]);
+    
+    printf("Mag Sum: %f\n", magnitudeSum);
+    
+    // Normalize weights
+    for(r = 0; r < resolution; r++)
+        for(c = 0; c < resolution; c++)
+            kernel[r * resolution + c] = normalizeWeight(kernel[r * resolution + c], magnitudeSum, resolution, support);
+}
+
+DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, int support)
+{
+    // Refactor this dirty mess!
+    DoubleComplex normalized;
+    weight.real /= mag;
+    weight.imaginary /= mag;
+    double t2 = (resolution*resolution)/(support*support);
+    weight.real *= t2;
+    weight.imaginary *= t2;
+    normalized.real = weight.real;
+    normalized.imaginary = weight.imaginary;
+    return normalized;
 }
 
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
@@ -68,7 +95,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     // Single dimension spheroidal
     double *spheroidal = calloc(convolutionSize, sizeof(double));
     
-    // numWPlanes = 1;
+    numWPlanes = 1;
     for(int iw = 0; iw < numWPlanes; iw++)
     {        
         // Calculate w term and w specific support size
@@ -77,7 +104,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         printf("FullSupport: %d\n", wFullSupport);
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
-        // Find the max weight for normalization
+        
         double sphrMax = -DBL_MAX;
         for(int r = 0; r < convolutionSize; r++)
             for(int c = 0; c < convolutionSize; c++)
@@ -85,13 +112,13 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
                     sphrMax = spheroidal[r] * spheroidal[c];
         
         // Create Phase Screen
-        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, sphrMax, wFullSupport);
+        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport, 1.0);
         
         if(iw == 0)
         {
             // Print to file
             char *buffer[100];
-            sprintf(buffer, "wproj_kernel_before_%d.csv", convolutionSize);
+            sprintf(buffer, "wproj_kernel_%f_before_%d.csv", w, convolutionSize);
             FILE *file = fopen(buffer, "w");
             for(int r = 0; r < convolutionSize; r++)
             {
@@ -109,12 +136,15 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         fft2dShift(convolutionSize, screen, shift);
         inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
         fft2dShift(convolutionSize, screen, shift);
+                
+        // Normalize the kernel
+        normalizeKernel(shift, convolutionSize, wFullSupport);
         
         if(iw == 0)
         {
             // Print to file
             char *buffer[100];
-            sprintf(buffer, "wproj_kernel_after_%d.csv", convolutionSize);
+            sprintf(buffer, "wproj_kernel_%f_after_%d.csv",w, convolutionSize);
             FILE *file = fopen(buffer, "w");
             for(int r = 0; r < convolutionSize; r++)
             {
@@ -158,7 +188,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         
         
         // Locate the support size of kernel stepping in from edge (evaluates magnitude of complex weight)
-        double minThreshold = 0.000001;
+        double minThreshold = 0.001;
         int convHalf = convolutionSize/2;
         int centerIndex = (convolutionSize*convolutionSize/2) + convHalf;
         printf("Center: %d\n", centerIndex);
@@ -292,13 +322,13 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
     // Bind weights to middle
-    for(int i = convHalf-wHalfSupport; i < convHalf+wHalfSupport; i++)
+    for(int i = convHalf-wHalfSupport; i <= convHalf+wHalfSupport; i++)
         spheroidal[i] = tempSpheroidal[i-(convHalf-wHalfSupport)];
     free(tempSpheroidal);
     free(nu);
 }
 
-void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, double taperMax, int scalarSupport)
+void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, int scalarSupport, double sphrMax)
 {        
     int convHalf = convSize/2;
     int scalarHalf = scalarSupport/2;
@@ -321,7 +351,7 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
         {
             m = (((double) ix-(scalarHalf+0.5)) / (double) scalarSupport) * fieldOfView;
             rsq = lsq+(m*m);
-            taper = taperMax / (taperY * spheroidal[ix+(convHalf-scalarHalf)]);
+            taper = (taperY * spheroidal[ix+(convHalf-scalarHalf)]);
             index = (iy+(convHalf-scalarHalf)) * convSize + (ix+(convHalf-scalarHalf));
             
             if(rsq < 1.0)
@@ -338,9 +368,12 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
             if(rsq >= 1.0)
                 panicCounter++;
                 
-            screen[index].real /= taper;
-            screen[index].imaginary /= taper;
+            // printf("%f ", taper);
+                
+            screen[index].real *= taper;
+            screen[index].imaginary *= taper;
         }
+        // printf("\n");
     }
     if(panicCounter > 0)
         printf("You have panicked a total of %d times, god damn!\n", panicCounter);
@@ -510,6 +543,11 @@ DoubleComplex complexMultiply(DoubleComplex x, DoubleComplex y)
     z.real = x.real*y.real - x.imaginary*y.imaginary;
     z.imaginary = x.imaginary*y.real + x.real*y.imaginary;
     return z;
+}
+
+double complexMagnitude(DoubleComplex x)
+{
+    return sqrt(x.real * x.real + x.imaginary * x.imaginary);
 }
 
 DoubleComplex complexDivide(DoubleComplex x, DoubleComplex y) 

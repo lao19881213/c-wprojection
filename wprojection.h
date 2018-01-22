@@ -32,18 +32,22 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kern
 void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf);
 int calcWFullSupport(double w, double wToMaxSupportRatio, double minSupport);
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov);
-void createPhaseScreen(int convSize, DoubleComplex *wScreen, double* spheroidal, double w, double fieldOfView, double sphrMax, int scalarSupport);
+void createPhaseScreen(int convSize, DoubleComplex *wScreen, double* spheroidal, double w, double fieldOfView, int scalarSupport, double sphrMax);
 void calcSpheroidalCurve(double *nu, double *curve, int width);
 void inverseFFT2dVectorRadixTransform(int numChannels, DoubleComplex *input, DoubleComplex *output);
 void calcBitReversedIndices(int n, int* indices);
 void fft2dShift(int n, DoubleComplex *input, DoubleComplex *shifted);
 int wTextureIndex(int x, int y, int z, int n);
 
+void normalizeKernel(DoubleComplex *kernel, int resolution, int support);
+DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, int support);
+
 DoubleComplex complexAdd(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexSubtract(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexMultiply(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexDivide(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexConjugateExp(double ph);
+double complexMagnitude(DoubleComplex x);
 
 #ifdef __cplusplus
 }
