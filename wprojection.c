@@ -13,18 +13,16 @@
 #endif
 
 // Adams TODO list:
-// -- experiment with the growth of resolutionSize vs scalarSupport
-// -- change normalization so that the taper is no longer normalized, 
-//    but the kernel after FFT is normalized by resolutionSize/scalarSupport
 // -- Detecting min threshold for kernel extraction prior to bicubic interpolation
 //    will be performed by some form of factoring - use of wToMaxSupportRatio and
 //    relation to resolution size. eg: 128 (width) and 7 (support)
+// -- Some strange pointer bug when using a resolution size < 128
 
 int gridSize = 18000;
 double kernelMaxFullSupport = 128.0;
 double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 32;
+int kernelTextureSize = 16;
 int kernelResolutionSize = 128;
 
 double cellsizeRad = 0.000006;
@@ -61,26 +59,84 @@ void normalizeKernel(DoubleComplex *kernel, int resolution, int support)
         for(c = 0; c < resolution; c++)
             magnitudeSum += complexMagnitude(kernel[r * resolution + c]);
     
-    printf("Mag Sum: %f\n", magnitudeSum);
-    
     // Normalize weights
     for(r = 0; r < resolution; r++)
         for(c = 0; c < resolution; c++)
-            kernel[r * resolution + c] = normalizeWeight(kernel[r * resolution + c], magnitudeSum, resolution, support);
+            normalizeWeight(&kernel[r * resolution + c], magnitudeSum, resolution, support);
 }
 
-DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, int support)
+DoubleComplex normalizeWeight(DoubleComplex *weight, double mag, int resolution, int support)
 {
-    // Refactor this dirty mess!
-    DoubleComplex normalized;
-    weight.real /= mag;
-    weight.imaginary /= mag;
+    weight->real /= mag;
+    weight->imaginary /= mag;
     double t2 = (resolution*resolution)/(support*support);
-    weight.real *= t2;
-    weight.imaginary *= t2;
-    normalized.real = weight.real;
-    normalized.imaginary = weight.imaginary;
-    return normalized;
+    weight->real *= t2;
+    weight->imaginary *= t2;
+}
+
+void copyAndTrimKernel(DoubleComplex *dest, DoubleComplex *source, int support)
+{
+    // Resize and copy over w projection kernel, trim top row and left-most column
+    // to ensure center element is the "peak" of the kernel
+    DoubleComplex *temp = realloc(dest, (support-1) * (support-1) * sizeof(DoubleComplex));
+    if(temp)
+    {
+        for(int r = 1; r < support; r++)
+        {
+            for(int c = 1; c < support; c++)
+            {   
+                int destI = (r-1) * (support-1) + (c-1);
+                int srcI = r * support + c;
+                dest[destI] = source[srcI];
+            }
+        }
+    }
+}
+
+void interpolateKernel(DoubleComplex *source, FloatComplex* dest, int origSupport, int newSupport, int texSupport, int iw, float w, int plane)
+{
+    int origHalf = (origSupport-1)/2;
+    int start = (origHalf/2) * origSupport + (origHalf/2);    
+    DoubleComplex *temp = calloc(newSupport * newSupport, sizeof(DoubleComplex));
+    
+    // Copy critical points of original kernel
+    for(int r = 0; r < newSupport; r++)
+        for(int c = 0; c < newSupport; c++)
+            temp[r * newSupport + c] = source[start + c + (origSupport * r)];
+    
+    if(iw == plane)
+        saveKernelToFile("wproj_%f_trimmed_%d.csv", w, newSupport, temp);
+    
+    // Perform bicubic interpolation
+    InterpolationPoint neighbours[16];
+    InterpolationPoint interpolated[4];
+    float xShift, yShift, shift2;
+    shift2 = getShift(newSupport);
+    
+    for(int y = 0; y < texSupport; y++)
+    {
+        yShift = calcShift(y, texSupport);
+
+        for(int x = 0; x < texSupport; x++)
+        {
+            xShift = calcShift(x, texSupport);
+            getBicubicNeighbours(x, y, neighbours, newSupport, texSupport, temp);
+
+            for(int i  = 0, j = -1; i < 4; i++, j++)
+            {
+                InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
+                newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, newSupport, true);
+                interpolated[i] = newPoint;
+            }
+
+            InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
+            final = interpolateCubicWeight(interpolated, final, 0, newSupport, false);
+            int index = y * texSupport + x;
+            dest[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
+        }
+    }
+    
+    free(temp);
 }
 
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
@@ -95,188 +151,119 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     // Single dimension spheroidal
     double *spheroidal = calloc(convolutionSize, sizeof(double));
     
-    numWPlanes = 1;
+    //numWPlanes = 1;
+    int plane = numWPlanes-1;
     for(int iw = 0; iw < numWPlanes; iw++)
     {        
+        int kernelResolution = convolutionSize;
         // Calculate w term and w specific support size
         double w = iw * iw / wScale;
         int wFullSupport = calcWFullSupport(w, wToMaxSupportRatio, kernelMinFullSupport);
-        printf("FullSupport: %d\n", wFullSupport);
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
         
-        double sphrMax = -DBL_MAX;
-        for(int r = 0; r < convolutionSize; r++)
-            for(int c = 0; c < convolutionSize; c++)
-                if(spheroidal[r] * spheroidal[c] > sphrMax)
-                    sphrMax = spheroidal[r] * spheroidal[c];
-        
         // Create Phase Screen
-        createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport, 1.0);
+        createPhaseScreen(kernelResolution, screen, spheroidal, w, fov, wFullSupport);
         
-        if(iw == 0)
-        {
-            // Print to file
-            char *buffer[100];
-            sprintf(buffer, "wproj_kernel_%f_before_%d.csv", w, convolutionSize);
-            FILE *file = fopen(buffer, "w");
-            for(int r = 0; r < convolutionSize; r++)
-            {
-                for(int c = 0; c < convolutionSize; c++)
-                {
-                    fprintf(file, "%f, ", screen[r * convolutionSize + c].real);
-                }
-                fprintf(file, "\n");
-            }
-            fclose(file);
-            printf("FILE SAVED\n");
-        }
+        if(iw == plane)
+            saveKernelToFile("wproj_%f_before_fft_%d.csv", w, kernelResolution, screen);
         
         // Perform shift and inverse FFT of Phase Screen
-        fft2dShift(convolutionSize, screen, shift);
-        inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
-        fft2dShift(convolutionSize, screen, shift);
-                
+        fft2dShift(kernelResolution, screen, shift);
+        inverseFFT2dVectorRadixTransform(kernelResolution, shift, screen);
+        fft2dShift(kernelResolution, screen, shift);
+        
+        if(iw == plane)
+            saveKernelToFile("wproj_%f_after_fft_%d.csv", w, kernelResolution, shift);
+        
+//        // Trim to ensure kernel is odd
+//        copyAndTrimKernel(screen, shift, kernelResolution);
+//        kernelResolution--;
         // Normalize the kernel
-        normalizeKernel(shift, convolutionSize, wFullSupport);
+        normalizeKernel(shift, kernelResolution, wFullSupport);
         
-        if(iw == 0)
-        {
-            // Print to file
-            char *buffer[100];
-            sprintf(buffer, "wproj_kernel_%f_after_%d.csv",w, convolutionSize);
-            FILE *file = fopen(buffer, "w");
-            for(int r = 0; r < convolutionSize; r++)
-            {
-                for(int c = 0; c < convolutionSize; c++)
-                {
-                    fprintf(file, "%f, ", shift[r * convolutionSize + c].real);
-                }
-                fprintf(file, "\n");
-            }
-            fclose(file);
-            printf("FILE SAVED\n");
-        }
-  
-        // Redundant? Probably...
-//        // Reallocate wKernel for mirroring missing row/cols
-//        DoubleComplex *temp = realloc(screen, (convolutionSize+1) * (convolutionSize+1) * sizeof(DoubleComplex));
-//        if(temp)
-//            // does temp become NULL?
-//            screen = temp;
-//        else
-//            printf("ERR: Unable to reallocate wKernel\n");
-//        
-//        // Append to list of kernels
-//        for(int r = 0; r < convolutionSize + 1; r++)
+        if(iw == plane)
+            saveKernelToFile("wproj_%f_normalized_%d.csv", w, kernelResolution, shift);
+        
+        int support = (kernelResolution - 1) / 2; // half + 1 + half
+        FloatComplex *interpolated = calloc(textureSupport * textureSupport, sizeof(FloatComplex));
+        interpolateKernel(shift, interpolated, kernelResolution, support, textureSupport, iw, w, plane);
+        
+        if(iw == plane)
+            saveKernelToFile("wproj_%f_interpolated_%d.csv", w, textureSupport, interpolated);
+        
+        free(interpolated);
+        
+//        // Locate the support size of kernel stepping in from edge (evaluates magnitude of complex weight)
+//        double minThreshold = 0.001;
+//        int convHalf = kernelResolution/2;
+//        int centerIndex = (kernelResolution*kernelResolution/2) + convHalf;
+//        int trialIndex = centerIndex - convHalf;
+//        int interpStart;
+//        for(interpStart = trialIndex; interpStart < centerIndex; interpStart++)
 //        {
-//            for(int c = 0; c < convolutionSize + 1; c++)
-//            {   
-//                // Copy existing weights
-//                if(r < convolutionSize && c < convolutionSize)
-//                    screen[r * convolutionSize + c] = shift[r * convolutionSize + c];
-//                // Mirror top row onto bottom row
-//                if(r == convolutionSize && c < convolutionSize)
-//                    screen[r * convolutionSize + c] = screen[0 * convolutionSize + c];
-//                // Mirror far left col weight onto far right col
-//                if(c == convolutionSize)
-//                    screen[r * convolutionSize + c] = screen[r * convolutionSize + 0];
-//            }
+//            double magnitude = sqrt(screen[interpStart].real * screen[interpStart].real + screen[interpStart].imaginary * screen[interpStart].imaginary);
+//            if(magnitude > minThreshold)
+//                break;
 //        }
-        
-        
-        
-        
-        // Locate the support size of kernel stepping in from edge (evaluates magnitude of complex weight)
-        double minThreshold = 0.001;
-        int convHalf = convolutionSize/2;
-        int centerIndex = (convolutionSize*convolutionSize/2) + convHalf;
-        printf("Center: %d\n", centerIndex);
-        int trialIndex = centerIndex - convHalf;
-        int interpStart;
-        for(interpStart = trialIndex; interpStart < centerIndex; interpStart++)
-        {
-            double magnitude = screen[interpStart].real;//sqrt(screen[interpStart].real * screen[interpStart].real + screen[interpStart].imaginary * screen[interpStart].imaginary);
-            //printf("%d: Val: %f\n", interpStart, magnitude);
-            if(magnitude > minThreshold)
-                break;
-        }
-        
-        int interpHalf = centerIndex - interpStart;
-        int interpWidth = interpHalf * 2 + 1;
-        interpStart -= (convolutionSize * (interpWidth/2));
-        
-        // Allocate memory for sub array and copy
-        DoubleComplex *subArray = calloc(interpWidth * interpWidth, sizeof(DoubleComplex));
-        for(int r = 0; r < interpWidth; r++)
-        {
-            for(int c = 0; c < interpWidth; c++)
-            {
-                int interpIndex = interpStart + c + (convolutionSize * r);
-                subArray[r * interpWidth + c] = screen[interpIndex];
+//        
+//        int interpHalf = centerIndex - interpStart;
+//        int interpWidth = interpHalf * 2 + 1;
+//        interpStart -= (kernelResolution * (interpWidth/2));
+//        
+//        // Allocate memory for sub array and copy
+//        DoubleComplex *subArray = calloc(interpWidth * interpWidth, sizeof(DoubleComplex));
+//        for(int r = 0; r < interpWidth; r++)
+//        {
+//            for(int c = 0; c < interpWidth; c++)
+//            {
+//                int interpIndex = interpStart + c + (kernelResolution * r);
+//                subArray[r * interpWidth + c] = screen[interpIndex];
+////                if(iw == 0)
+////                    printf("%d ", interpIndex);
+//            }   
+////            if(iw == 0)
+////                printf("\n");
+//        }
+//        
+//        InterpolationPoint neighbours[16];
+//        InterpolationPoint interpolated[4];
+//        
+//        float xShift, yShift, shift2;
+//        shift2 = getShift(kernelResolution);
+//        // Interpolate projection screen into texture
+//        for(int y = 0; y < textureSupport; y++)
+//        {
+//            yShift = calcShift(y, textureSupport);
+//            
+//            for(int x = 0; x < textureSupport; x++)
+//            {
+//                xShift = calcShift(x, textureSupport);
+//                getBicubicNeighbours(x, y, neighbours, interpWidth, textureSupport, subArray);
+//                
+//                for(int i  = 0, j = -1; i < 4; i++, j++)
+//                {
+//                    InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
+//                    newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpWidth, true);
+//                    interpolated[i] = newPoint;
+//                }
+//                
+//                InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
+//                final = interpolateCubicWeight(interpolated, final, 0, interpWidth, false);
+//                int index = wTextureIndex(x, y, iw, textureSupport);
+//                wTextures[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
 //                if(iw == 0)
-                    printf("%d ", interpIndex);
-            }   
+//                    printf("%f ", wTextures[index].real);
+//            }
+//            
 //            if(iw == 0)
 //                printf("\n");
-        }
-        
-        InterpolationPoint neighbours[16];
-        InterpolationPoint interpolated[4];
-        
-        float xShift, yShift, shift2;
-        shift2 = getShift(convolutionSize);
-        // Interpolate projection screen into texture
-        for(int y = 0; y < textureSupport; y++)
-        {
-            yShift = calcShift(y, textureSupport);
-            
-            for(int x = 0; x < textureSupport; x++)
-            {
-                xShift = calcShift(x, textureSupport);
-                getBicubicNeighbours(x, y, neighbours, interpWidth, textureSupport, subArray);
-                
-                for(int i  = 0, j = -1; i < 4; i++, j++)
-                {
-                    InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
-                    newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpWidth, true);
-                    interpolated[i] = newPoint;
-                }
-                
-                InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
-                final = interpolateCubicWeight(interpolated, final, 0, interpWidth, false);
-                int index = wTextureIndex(x, y, iw, textureSupport);
-                wTextures[index] = (FloatComplex) {.real = (float) final.weight.real, .imaginary = (float) final.weight.imaginary};
-                if(iw == 0)
-                    printf("%f ", wTextures[index].real);
-            }
-            
-            if(iw == 0)
-                printf("\n");
-        }
-        
-        free(subArray);
-        
-        
-//        // Trim kernels to texture dimensions
-//        int kernelCenter = (convolutionSize / 2);
-//        for(int r = 0; r < textureSupport; r++)
-//        {
-//            int kernelRowIndex = (kernelCenter + r) - (textureSupport/2);
-//
-//            for(int c = 0; c < textureSupport; c++)
-//            {
-//                int kernelColIndex = (kernelCenter + c) - (textureSupport/2);
-//                int index = wTextureIndex(c, r, iw, textureSupport);
-//                // Normal assignment
-//                wTextures[index] = (FloatComplex) {.real = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].real,
-//                    .imaginary = (float) screen[kernelRowIndex * convolutionSize + kernelColIndex].imaginary};
-//
-////                printf("%4.10f%+4.10f ", wTextures[index].real, wTextures[index].imaginary);
-//
-//            }
 //        }
+//        
+//        free(subArray);
         
+        // This assumes the reallocate will be successful, consider refactoring
+        //realloc(screen, (convolutionSize) * (convolutionSize) * sizeof(DoubleComplex));
         memset(screen, 0, convolutionSize * convolutionSize * sizeof(DoubleComplex));
         memset(shift, 0, convolutionSize * convolutionSize * sizeof(DoubleComplex));
     }
@@ -285,24 +272,25 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     free(screen);
     free(shift);
     
-//    for(int iw = 0; iw < numWPlanes; iw++)
-//    {
-//        for(int iy = 0; iy < textureSupport; iy++)
-//        {
-//            for(int ix = 0; ix < textureSupport; ix++)
-//            {
-//                int i = wTextureIndex(ix, iy, iw, textureSupport);
-//                
-//                if(iw == 0)
-//                    printf("%.20f, ", wTextures[i].real);
-//            }
-//            
-//            if(iw == 0)
-//                printf("\n");
-//        }
-//    }
-    
+   
     free(wTextures);
+}
+
+void saveKernelToFile(char* filename, float w, int support, DoubleComplex* data)
+{
+    char *buffer[100];
+    sprintf(buffer, filename, w, support);
+    FILE *file = fopen(buffer, "w");
+    for(int r = 0; r < support; r++)
+    {
+        for(int c = 0; c < support; c++)
+        {
+            fprintf(file, "%f, ", data[r * support + c].real);
+        }
+        fprintf(file, "\n");
+    }
+    fclose(file);
+    printf("FILE SAVED\n");
 }
 
 // Col, Row, Depth, Row Dimension
@@ -328,7 +316,7 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     free(nu);
 }
 
-void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, int scalarSupport, double sphrMax)
+void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, double w, double fieldOfView, int scalarSupport)
 {        
     int convHalf = convSize/2;
     int scalarHalf = scalarSupport/2;
@@ -351,7 +339,7 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
         {
             m = (((double) ix-(scalarHalf+0.5)) / (double) scalarSupport) * fieldOfView;
             rsq = lsq+(m*m);
-            taper = (taperY * spheroidal[ix+(convHalf-scalarHalf)]);
+            taper = taperY * spheroidal[ix+(convHalf-scalarHalf)];
             index = (iy+(convHalf-scalarHalf)) * convSize + (ix+(convHalf-scalarHalf));
             
             if(rsq < 1.0)
