@@ -24,7 +24,7 @@ typedef struct InterpolationPoint {
 
 double getShift(double width);
 float getStartShift(float width);
-float calcShift(int index, int width);
+float calcShift(int index, int width, float start);
 int calcPosition(float x, int scalerWidth);
 InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, InterpolationPoint newPoint, int start, int width, bool horizontal);
 void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kernelFullSupport, int interpFullSupport, DoubleComplex* matrix);
@@ -38,6 +38,8 @@ void inverseFFT2dVectorRadixTransform(int numChannels, DoubleComplex *input, Dou
 void calcBitReversedIndices(int n, int* indices);
 void fft2dShift(int n, DoubleComplex *input, DoubleComplex *shifted);
 int wTextureIndex(int x, int y, int z, int n);
+float calcSpheroidalShift(int index, int width);
+float calcInterpolateShift(int index, int width, float start);
 
 void saveKernelToFile(char* filename, float w, int support, DoubleComplex* data);
 void copyAndTrimKernel(DoubleComplex *dest, DoubleComplex *source, int support);
@@ -48,7 +50,6 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
 DoubleComplex complexAdd(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexSubtract(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexMultiply(DoubleComplex x, DoubleComplex y);
-DoubleComplex complexDivide(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexConjugateExp(double ph);
 double complexMagnitude(DoubleComplex x);
 

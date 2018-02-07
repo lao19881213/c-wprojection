@@ -13,16 +13,15 @@
 #endif
 
 // Adams TODO list:
-// -- Detecting min threshold for kernel extraction prior to bicubic interpolation
-//    will be performed by some form of factoring - use of wToMaxSupportRatio and
-//    relation to resolution size. eg: 128 (width) and 7 (support)
+// -- Something is not right with the bicubic interpolation... resulting matrix is
+// -- partially symmetric but something isnt right.
 
 int gridSize = 18000;
-double kernelMaxFullSupport = 64.0; // kernelMaxFullSupport <= kernelResolutionSize
+double kernelMaxFullSupport = 16.0; // kernelMaxFullSupport <= kernelResolutionSize
 double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 32;
-int kernelResolutionSize = 256;
+int kernelTextureSize = 8;
+int kernelResolutionSize = 16;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -39,6 +38,8 @@ int main(int argc, char** argv)
     wToMaxSupportRatio = (kernelMaxFullSupport - kernelMinFullSupport) / maxW;
     
     createWProjectionPlanes(kernelResolutionSize, numWPlanes, kernelTextureSize, wScale, fieldOfViewDegrees);
+    
+    printf("Finished.\n");
     
     return (EXIT_SUCCESS);
 }
@@ -75,54 +76,58 @@ DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, 
 
 void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSupport, int texSupport, int iw, float w, int plane)
 {
-    int newSupport = (origSupport/2)-1;
-    int start = (((newSupport)/2)+2) * origSupport + ((newSupport)/2)+2;    
-    DoubleComplex *temp = calloc(newSupport * newSupport, sizeof(DoubleComplex));
-    
-    // Copy critical points of original kernel
-    for(int r = 0; r < newSupport; r++)
-        for(int c = 0; c < newSupport; c++)
-            temp[r * newSupport + c] = source[start + c + (origSupport * r)];
-    
-    if(iw == plane)
-        saveKernelToFile("wproj_%f_trimmed_%d.csv", w, newSupport, temp);
+    int interpSupport = (origSupport/2);
+//    int start = (((newSupport)/2)+2) * origSupport + ((newSupport)/2)+2;    
+//    DoubleComplex *temp = calloc(newSupport * newSupport, sizeof(DoubleComplex));
+//    
+//    // Copy critical points of original kernel
+//    for(int r = 0; r < newSupport; r++)
+//        for(int c = 0; c < newSupport; c++)
+//            temp[r * newSupport + c] = source[start + c + (origSupport * r)];
+//    
+//    if(iw == plane)
+//        saveKernelToFile("wproj_%f_trimmed_%d.csv", w, newSupport, temp);
     
     // Perform bicubic interpolation
     InterpolationPoint neighbours[16];
     InterpolationPoint interpolated[4];
     float xShift, yShift, shift2;
-    shift2 = getShift(newSupport);
+    shift2 = getShift(interpSupport);
     
     for(int y = 0; y < texSupport; y++)
     {
-        yShift = calcShift(y, texSupport);
-
+        yShift = calcShift(y, texSupport, -1.0);
+        
         for(int x = 0; x < texSupport; x++)
         {
-            xShift = calcShift(x, texSupport);
-            getBicubicNeighbours(x, y, neighbours, newSupport, texSupport, temp);
+            xShift = calcShift(x, texSupport, -1.0);
+            
+            printf("[Y: %f, X: %f] ", yShift, xShift);
+            
+            getBicubicNeighbours(x, y, neighbours, origSupport, interpSupport, source);
 
             for(int i  = 0, j = -1; i < 4; i++, j++)
             {
                 InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
-                newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, newSupport, true);
+                newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpSupport, true);
                 interpolated[i] = newPoint;
             }
 
             InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
-            final = interpolateCubicWeight(interpolated, final, 0, newSupport, false);
+            final = interpolateCubicWeight(interpolated, final, 0, interpSupport, false);
             int index = y * texSupport + x;
             dest[index] = (DoubleComplex) {.real = final.weight.real, .imaginary = final.weight.imaginary};
             
-            if(iw==plane)
-                printf("%f ", dest[index].real);
+//            if(iw==plane)
+//                printf("%f ", dest[index].real);
         }
+        printf("\n");
         
-        if(iw==plane)
-            printf("\n");
+//        if(iw==plane)
+//            printf("\n");
     }
     
-    free(temp);
+    //free(temp);
 }
 
 void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSupport, double wScale, double fov)
@@ -139,13 +144,20 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     
     //numWPlanes = 1;
     int plane = numWPlanes-1;
-    for(int iw = 0; iw < numWPlanes; iw++)
+    for(int iw = numWPlanes-1; iw < numWPlanes; iw++)
     {        
         // Calculate w term and w specific support size
         double w = iw * iw / wScale;
         int wFullSupport = calcWFullSupport(w, wToMaxSupportRatio, kernelMinFullSupport);
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
+
+        // Prints prolate spheroidal
+        for(int i = 0; i < convolutionSize; i++)
+            printf("%f\n", spheroidal[i]);
+        
+        printf("\n\n");
+        
         // Create Phase Screen
         createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport);
         
@@ -215,7 +227,12 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     double *tempSpheroidal = calloc(wFullSupport, sizeof(double));
     // Calculate steps
     for(int i = 0; i < wFullSupport; i++)
-        nu[i] = fabs(calcShift(i, wFullSupport));
+    {
+        nu[i] = fabs(calcSpheroidalShift(i, wFullSupport));
+        printf("%f\n", nu[i]);
+    }
+    printf("\n\n");
+        
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
     // Bind weights to middle
@@ -448,15 +465,6 @@ double complexMagnitude(DoubleComplex x)
     return sqrt(x.real * x.real + x.imaginary * x.imaginary);
 }
 
-DoubleComplex complexDivide(DoubleComplex x, DoubleComplex y) 
-{
-    DoubleComplex z;
-    double denominator = (y.real * y.real) + (y.imaginary * y.imaginary);  
-    z.real = (x.real*y.real + x.imaginary*y.imaginary) / denominator;
-    z.imaginary = (x.imaginary*y.real - x.real*y.imaginary) / denominator;
-    return z;    
-}
-
 DoubleComplex complexConjugateExp(double ph)
 {
     return (DoubleComplex) {.real = cos((double)(2.0*M_PI*ph)), .imaginary = -sin((double)(2.0*M_PI*ph))};
@@ -520,34 +528,49 @@ InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, Interpolat
     return newPoint;
 }
 
-void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int kernelFullSupport, int interpFullSupport, DoubleComplex* matrix)
+void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int origFullSupport, int interpFullSupport, DoubleComplex* matrix)
 {
     // Transform x, y into scaled shift
-    float shiftX = calcShift(x, interpFullSupport);
-    float shiftY = calcShift(y, interpFullSupport);
+    float shiftX = calcInterpolateShift(x+1, interpFullSupport, -0.5);
+    float shiftY = calcInterpolateShift(y+1, interpFullSupport, -0.5);
+//    printf("Populating element at Row: %d and Col: %d\n", y, x);
+//    printf("Row Shift: %f, Col Shift: %f\n", shiftY, shiftX);
     // Get x, y from scaled shift 
-    int scaledPosX = calcPosition(shiftX, kernelFullSupport);
-    int scaledPosY = calcPosition(shiftY, kernelFullSupport);
+    int scaledPosX = calcPosition(shiftX, origFullSupport)-1;
+    int scaledPosY = calcPosition(shiftY, origFullSupport)-1;
+    // printf("X: %d, Y: %d\n", scaledPosX, scaledPosY);
     // Get 16 neighbours
     for(int r = scaledPosY - 1, i = 0; r < scaledPosY + 3; r++)
     {
         for(int c = scaledPosX - 1; c < scaledPosX + 3; c++)
         {
-            InterpolationPoint n = (InterpolationPoint) {.xShift = calcShift(c, kernelFullSupport), .yShift = calcShift(r, kernelFullSupport)};
+            //printf("[r: %d, c: %d] ", r, c);
+            InterpolationPoint n = (InterpolationPoint) {.xShift = calcShift(c, origFullSupport, -1.0), .yShift = calcShift(r, origFullSupport, -1.0)};
             
-            if(c < 0 || c > kernelFullSupport || r < 0 || r > kernelFullSupport)
+            if(c < 0 || c > origFullSupport || r < 0 || r > origFullSupport)
                 n.weight = (DoubleComplex) {.real = 0.0, .imaginary = 0.0};
             else
-                n.weight = matrix[r * kernelFullSupport + c];
+                n.weight = matrix[r * origFullSupport + c];
             
             neighbours[i++] = n;
         }
+        printf("\n");
     }
 }
 
-float calcShift(int index, int width)
+float calcSpheroidalShift(int index, int width)
 {
-    return getStartShift(width) + index * getShift(width);
+    return -1.0 + index * getShift(width);
+}
+
+float calcInterpolateShift(int index, int width, float start)
+{
+    return start + ((float)index/(float)width);
+}
+
+float calcShift(int index, int width, float start)
+{
+    return start + index * getShift(width);
 }
 
 double getShift(double width)
