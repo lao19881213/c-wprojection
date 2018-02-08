@@ -15,6 +15,9 @@
 // Adams TODO list:
 // -- Something is not right with the bicubic interpolation... resulting matrix is
 // -- partially symmetric but something isnt right.
+// -- Need to discuss with Andrew regarding the problem of symmetric PS and Phase,
+//    as the result after FFT is asymmetric, does this mean it must be imbalanced prior
+//    to FFT?...
 
 int gridSize = 18000;
 double kernelMaxFullSupport = 16.0; // kernelMaxFullSupport <= kernelResolutionSize
@@ -102,7 +105,7 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
         {
             xShift = calcShift(x, texSupport, -1.0);
             
-            printf("[Y: %f, X: %f] ", yShift, xShift);
+            //printf("[Y: %f, X: %f] ", yShift, xShift);
             
             getBicubicNeighbours(x, y, neighbours, origSupport, interpSupport, source);
 
@@ -121,7 +124,7 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
 //            if(iw==plane)
 //                printf("%f ", dest[index].real);
         }
-        printf("\n");
+        //printf("\n");
         
 //        if(iw==plane)
 //            printf("\n");
@@ -152,21 +155,37 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
 
-        // Prints prolate spheroidal
-        for(int i = 0; i < convolutionSize; i++)
-            printf("%f\n", spheroidal[i]);
-        
-        printf("\n\n");
+//        // Prints prolate spheroidal
+//        for(int i = 0; i < convolutionSize; i++)
+//        {
+//            for(int j = 0; j < convolutionSize; j++)
+//            {
+//                printf("%f ", spheroidal[i] * spheroidal[j]);
+//            }
+//            printf("\n");
+//        }
+//        
+//        printf("\n\n");
         
         // Create Phase Screen
         createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport);
         
         if(iw == plane)
-            saveKernelToFile("wproj_%f_before_fft_%d.csv", w, convolutionSize, screen);
+            saveKernelToFile("wproj_%f_phase_screen_%d.csv", w, convolutionSize, screen);
         
         // Perform shift and inverse FFT of Phase Screen
         fft2dShift(convolutionSize, screen, shift);
         inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
+//        for(int i = 0; i < convolutionSize; i++)
+//        {
+//            for(int j = 0; j < convolutionSize; j++)
+//            {
+//                printf("%f ", screen[i * convolutionSize + j].real);
+//            }
+//            printf("\n");
+//        }
+//        
+//        printf("\n\n");
         fft2dShift(convolutionSize, screen, shift);
         
         if(iw == plane)
@@ -229,12 +248,16 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     for(int i = 0; i < wFullSupport; i++)
     {
         nu[i] = fabs(calcSpheroidalShift(i, wFullSupport));
-        printf("%f\n", nu[i]);
+        // printf("%f\n", nu[i]);
     }
-    printf("\n\n");
+    // printf("\n\n");
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
+    
+//    tempSpheroidal[0] = 0.0f;
+//    tempSpheroidal[wFullSupport-1] = 0.0f;
+    
     // Bind weights to middle
     for(int i = convHalf-wHalfSupport; i <= convHalf+wHalfSupport; i++)
         spheroidal[i] = tempSpheroidal[i-(convHalf-wHalfSupport)];
@@ -253,21 +276,20 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
     double lsq, rsq;
     double phase;
     
-    // To discuss with Andrew: when applying a +0.5 offset to L and M,
-    // this results in an asymmetric screen, which is not what is desired.
-    
     int panicCounter = 0;
     
     for(int iy = 0; iy < scalarSupport; iy++)
     {
-        l = (((double) iy-(scalarHalf)) / (double) scalarSupport) * fieldOfView;
+        l = (((double) iy-(scalarHalf-0.5)) / (double) scalarSupport) * fieldOfView;
         lsq = l*l;
         taperY = spheroidal[iy+(convHalf-scalarHalf)];
         phase = 0.0;
         
+        // printf("L: %f\n", l);
+        
         for(int ix = 0; ix < scalarSupport; ix++)
         {
-            m = (((double) ix-(scalarHalf)) / (double) scalarSupport) * fieldOfView;
+            m = (((double) ix-(scalarHalf-0.5)) / (double) scalarSupport) * fieldOfView;
             rsq = lsq+(m*m);
             taper = taperY * spheroidal[ix+(convHalf-scalarHalf)];
             index = (iy+(convHalf-scalarHalf)) * convSize + (ix+(convHalf-scalarHalf));
@@ -472,7 +494,6 @@ DoubleComplex complexConjugateExp(double ph)
 
 void fft2dShift(int n, DoubleComplex *input, DoubleComplex *shifted)
 {
-    // Can be refactored to save memory
     int r = 0, c = 0;
     for(int i = -n/2; i < n/2; i++)
     {
@@ -496,7 +517,6 @@ void fft2dShift(int n, DoubleComplex *input, DoubleComplex *shifted)
 
 InterpolationPoint interpolateCubicWeight(InterpolationPoint *points, InterpolationPoint newPoint, int start, int width, bool horizontal)
 {      
-    // Convert to double?
     double shiftCubed = pow(getShift(width), 3);
 
     DoubleComplex p0 = (DoubleComplex) {.real = (horizontal) ? points[start+0].xShift : points[start+0].yShift, .imaginary = 0.0};
@@ -554,13 +574,13 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
             
             neighbours[i++] = n;
         }
-        printf("\n");
+        //printf("\n");
     }
 }
 
 float calcSpheroidalShift(int index, int width)
 {
-    return -1.0 + index * getShift(width);
+    return -1.0 + index * getShift(width-1);
 }
 
 float calcInterpolateShift(int index, int width, float start)
