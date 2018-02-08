@@ -45,7 +45,7 @@ void saveKernelToFile(char* filename, float w, int support, DoubleComplex* data)
 void copyAndTrimKernel(DoubleComplex *dest, DoubleComplex *source, int support);
 void normalizeKernel(DoubleComplex *kernel, int resolution, int support);
 DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, int support);
-void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSupport, int texSupport, int iw, float w, int plane);
+void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSupport, int texSupport);
 
 DoubleComplex complexAdd(DoubleComplex x, DoubleComplex y);
 DoubleComplex complexSubtract(DoubleComplex x, DoubleComplex y);
