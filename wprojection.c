@@ -15,16 +15,13 @@
 // Adams TODO list:
 // -- Something is not right with the bicubic interpolation... resulting matrix is
 // -- partially symmetric but something isnt right.
-// -- Need to discuss with Andrew regarding the problem of symmetric PS and Phase,
-//    as the result after FFT is asymmetric, does this mean it must be imbalanced prior
-//    to FFT?...
 
 int gridSize = 18000;
-double kernelMaxFullSupport = 8.0; // kernelMaxFullSupport <= kernelResolutionSize
+double kernelMaxFullSupport = 16.0; // kernelMaxFullSupport <= kernelResolutionSize
 double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 4;
-int kernelResolutionSize = 8;
+int kernelTextureSize = 8;
+int kernelResolutionSize = 16;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -84,31 +81,27 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
     InterpolationPoint neighbours[16];
     InterpolationPoint interpolated[4];
     float xShift, yShift, shift2;
-    shift2 = getShift(origSupport);
-    
-    printf("%f\n", shift2);
+    shift2 = getShift(origSupport)/2.0;
     
     for(int y = 0; y < texSupport; y++)
     {
-        yShift = calcShift(y, texSupport, getStartShift(texSupport));
+        yShift = calcInterpolateShift(y, texSupport, -0.5);//+(getShift(texSupport)/4.0);
         
         for(int x = 0; x < texSupport; x++)
         {
-            xShift = calcShift(x, texSupport, getStartShift(texSupport));
-            
-            // printf("[Y: %f, X: %f] ", yShift, xShift);
-            
+            xShift = calcInterpolateShift(x, texSupport, -0.5)+(getShift(texSupport)/4.0);
             getBicubicNeighbours(x, y, neighbours, origSupport, interpSupport, source);
-
+            
+            // printf("===> %f\n", yShift);
             for(int i  = 0, j = -1; i < 4; i++, j++)
             {
-                printf("%f\n", (yShift + j * shift2));
                 InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
                 newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpSupport, true);
                 interpolated[i] = newPoint;
+                
+                //printf("%f %f %f %f %f\n", neighbours[0].yShift, neighbours[1].yShift, newPoint.yShift, neighbours[2].yShift, neighbours[3].yShift);
             }
-            
-            printf("\n\n");
+            //printf("\n");
 
             InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
             final = interpolateCubicWeight(interpolated, final, 0, interpSupport, false);
@@ -147,7 +140,7 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
 
-        // Prints prolate spheroidal
+//        // Prints prolate spheroidal
 //        for(int i = 0; i < convolutionSize; i++)
 //        {
 //            for(int j = 0; j < convolutionSize; j++)
@@ -243,9 +236,9 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     for(int i = 0; i < wFullSupport; i++)
     {
         nu[i] = fabs(calcSpheroidalShift(i, wFullSupport));
-        printf("%f\n", nu[i]);
+//        printf("%f\n", nu[i]);
     }
-    printf("\n\n");
+//    printf("\n\n");
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
@@ -550,7 +543,7 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
     // Get x, y from scaled shift 
     int scaledPosX = calcPosition(shiftX, origFullSupport)-1;
     int scaledPosY = calcPosition(shiftY, origFullSupport)-1;
-    // printf("X: %d, Y: %d\n", scaledPosX, scaledPosY);
+//     printf("X: %d, Y: %d\n", scaledPosX, scaledPosY);
     // Get 16 neighbours
     for(int r = scaledPosY - 1, i = 0; r < scaledPosY + 3; r++)
     {
@@ -565,14 +558,18 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
                 n.weight = matrix[r * origFullSupport + c];
             
             neighbours[i++] = n;
+            
+            printf("[x: %f, y: %f] ", n.xShift, n.yShift);
+            // printf("%f ", n.weight.real);
         }
         printf("\n");
     }
+    //printf("\n");
 }
 
 float calcSpheroidalShift(int index, int width)
 {
-    return -1.0 + index * getShift(width-1);
+    return -1.0 + index * getShift(width);
 }
 
 float calcInterpolateShift(int index, int width, float start)
