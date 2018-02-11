@@ -12,16 +12,12 @@
     #define M_PI 3.14159265358979323846264338327
 #endif
 
-// Adams TODO list:
-// -- Something is not right with the bicubic interpolation... resulting matrix is
-// -- partially symmetric but something isnt right.
-
 int gridSize = 18000;
-double kernelMaxFullSupport = 16.0; // kernelMaxFullSupport <= kernelResolutionSize
+double kernelMaxFullSupport = 128.0; // kernelMaxFullSupport <= kernelResolutionSize
 double kernelMinFullSupport = 7.0;
 
-int kernelTextureSize = 8;
-int kernelResolutionSize = 16;
+int kernelTextureSize = 128;
+int kernelResolutionSize = 1024;
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -75,46 +71,39 @@ DoubleComplex normalizeWeight(DoubleComplex weight, double mag, int resolution, 
 }
 
 void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSupport, int texSupport)
-{
-    int interpSupport = (origSupport/2);    
+{   
     // Perform bicubic interpolation
     InterpolationPoint neighbours[16];
     InterpolationPoint interpolated[4];
-    float xShift, yShift, shift2;
-    shift2 = getShift(origSupport)/2.0;
+    float xShift, yShift;
     
     for(int y = 0; y < texSupport; y++)
     {
-        yShift = calcInterpolateShift(y, texSupport, -0.5);//+(getShift(texSupport)/4.0);
+        yShift = calcInterpolateShift(y, texSupport, -0.5)+(getShift(texSupport)/(2.0));
         
         for(int x = 0; x < texSupport; x++)
         {
-            xShift = calcInterpolateShift(x, texSupport, -0.5)+(getShift(texSupport)/4.0);
-            getBicubicNeighbours(x, y, neighbours, origSupport, interpSupport, source);
+            xShift = calcInterpolateShift(x, texSupport, -0.5)+(getShift(texSupport)/(2.0));
+            getBicubicNeighbours(x, y, neighbours, origSupport, texSupport, source);
             
-            // printf("===> %f\n", yShift);
-            for(int i  = 0, j = -1; i < 4; i++, j++)
+            for(int i  = 0; i < 4; i++)
             {
-                InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = (yShift + j * shift2)};
-                newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, interpSupport, true);
+                InterpolationPoint newPoint = (InterpolationPoint) {.xShift = xShift, .yShift = neighbours[i*4].yShift};
+                newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, origSupport, true);
                 interpolated[i] = newPoint;
                 
-                //printf("%f %f %f %f %f\n", neighbours[0].yShift, neighbours[1].yShift, newPoint.yShift, neighbours[2].yShift, neighbours[3].yShift);
+                // printf("[%f, %f] ", newPoint.yShift, newPoint.xShift);
+//                printf("%f %f %f %f %f\n", neighbours[0].xShift, neighbours[1].xShift, newPoint.xShift, neighbours[2].xShift, neighbours[3].xShift);
+//                printf("%f %f %f %f %f\n", neighbours[0].yShift, neighbours[1].yShift, newPoint.yShift, neighbours[2].yShift, neighbours[3].yShift);
             }
-            //printf("\n");
+            //printf("\n\n");
 
             InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
-            final = interpolateCubicWeight(interpolated, final, 0, interpSupport, false);
+            final = interpolateCubicWeight(interpolated, final, 0, origSupport, false);
             int index = y * texSupport + x;
             dest[index] = (DoubleComplex) {.real = final.weight.real, .imaginary = final.weight.imaginary};
-            
-//            if(iw==plane)
-//                printf("%f ", dest[index].real);
         }
-        printf("\n");
-        
-//        if(iw==plane)
-//            printf("\n");
+        //printf("\n");
     }
 }
 
@@ -150,11 +139,6 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
 //            printf("\n");
 //        }
         
-//        for(int i = 0; i < convolutionSize; i++)
-//            printf("%f \n", spheroidal[i]);
-//        
-//        printf("\n\n");
-        
         // Create Phase Screen
         createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport);
         
@@ -164,16 +148,6 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         // Perform shift and inverse FFT of Phase Screen
         fft2dShift(convolutionSize, screen, shift);
         inverseFFT2dVectorRadixTransform(convolutionSize, shift, screen);
-//        for(int i = 0; i < convolutionSize; i++)
-//        {
-//            for(int j = 0; j < convolutionSize; j++)
-//            {
-//                printf("%f ", screen[i * convolutionSize + j].real);
-//            }
-//            printf("\n");
-//        }
-//        
-//        printf("\n\n");
         fft2dShift(convolutionSize, screen, shift);
         
         if(iw == plane)
@@ -544,12 +518,11 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
     int scaledPosX = calcPosition(shiftX, origFullSupport)-1;
     int scaledPosY = calcPosition(shiftY, origFullSupport)-1;
 //     printf("X: %d, Y: %d\n", scaledPosX, scaledPosY);
-    // Get 16 neighbours
+    // Get 16 nInterpolationPointeighbours
     for(int r = scaledPosY - 1, i = 0; r < scaledPosY + 3; r++)
     {
         for(int c = scaledPosX - 1; c < scaledPosX + 3; c++)
         {
-            //printf("[r: %d, c: %d] ", r, c);
             InterpolationPoint n = (InterpolationPoint) {.xShift = calcShift(c, origFullSupport, -1.0), .yShift = calcShift(r, origFullSupport, -1.0)};
             
             if(c < 0 || c > origFullSupport || r < 0 || r > origFullSupport)
@@ -558,13 +531,12 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
                 n.weight = matrix[r * origFullSupport + c];
             
             neighbours[i++] = n;
-            
-            printf("[x: %f, y: %f] ", n.xShift, n.yShift);
+         
+            //printf("[(%d, %d), y: %+.3f, x: %+.3f] ", r, c, n.yShift, n.xShift);
             // printf("%f ", n.weight.real);
         }
-        printf("\n");
+        //printf("\n");
     }
-    //printf("\n");
 }
 
 float calcSpheroidalShift(int index, int width)
