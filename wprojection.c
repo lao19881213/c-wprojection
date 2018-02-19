@@ -13,11 +13,11 @@
 #endif
 
 int gridSize = 18000;
-double kernelMaxFullSupport = 128.0; // kernelMaxFullSupport <= kernelResolutionSize
-double kernelMinFullSupport = 7.0;
+double kernelMaxFullSupport = 16.0;  // kernelMaxFullSupport <= kernelResolutionSize
+double kernelMinFullSupport = 7.0;    
 
-int kernelTextureSize = 128;
-int kernelResolutionSize = 1024;
+int kernelTextureSize = 8;          // kernelTextureSize >= kernelMaxFullSupport
+int kernelResolutionSize = 16;       // Always a power of 2 greater than the textureSize MINIMUM
 
 double cellsizeRad = 0.000006;
 double fieldOfViewDegrees = 0.0;
@@ -79,11 +79,11 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
     
     for(int y = 0; y < texSupport; y++)
     {
-        yShift = calcInterpolateShift(y, texSupport, -0.5)+(getShift(texSupport)/(2.0));
+        yShift = calcInterpolateShift(y, texSupport, -0.5)+(getShift(texSupport)/(4.0));
         
         for(int x = 0; x < texSupport; x++)
         {
-            xShift = calcInterpolateShift(x, texSupport, -0.5)+(getShift(texSupport)/(2.0));
+            xShift = calcInterpolateShift(x, texSupport, -0.5)+(getShift(texSupport)/(4.0));
             getBicubicNeighbours(x, y, neighbours, origSupport, texSupport, source);
             
             for(int i  = 0; i < 4; i++)
@@ -92,18 +92,20 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
                 newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, origSupport, true);
                 interpolated[i] = newPoint;
                 
-                // printf("[%f, %f] ", newPoint.yShift, newPoint.xShift);
+                printf("[%f, %f] ", newPoint.yShift, newPoint.xShift);
 //                printf("%f %f %f %f %f\n", neighbours[0].xShift, neighbours[1].xShift, newPoint.xShift, neighbours[2].xShift, neighbours[3].xShift);
 //                printf("%f %f %f %f %f\n", neighbours[0].yShift, neighbours[1].yShift, newPoint.yShift, neighbours[2].yShift, neighbours[3].yShift);
             }
-            //printf("\n\n");
+            printf("\n");
 
+            // printf("[X: %f, Y: %f] ", xShift, yShift);
+            
             InterpolationPoint final = (InterpolationPoint) {.xShift = xShift, .yShift = yShift};
             final = interpolateCubicWeight(interpolated, final, 0, origSupport, false);
             int index = y * texSupport + x;
             dest[index] = (DoubleComplex) {.real = final.weight.real, .imaginary = final.weight.imaginary};
         }
-        //printf("\n");
+         printf("\n");
     }
 }
 
@@ -119,7 +121,8 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     // Single dimension spheroidal
     double *spheroidal = calloc(convolutionSize, sizeof(double));
     
-    //numWPlanes = 1;
+    // numWPlanes = 2;//numWPlanes-1;
+    //int plane = numWPlanes-1;
     int plane = numWPlanes-1;
     for(int iw = numWPlanes-1; iw < numWPlanes; iw++)
     {        
@@ -128,16 +131,20 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
         int wFullSupport = calcWFullSupport(w, wToMaxSupportRatio, kernelMinFullSupport);
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
-
-//        // Prints prolate spheroidal
-//        for(int i = 0; i < convolutionSize; i++)
-//        {
-//            for(int j = 0; j < convolutionSize; j++)
-//            {
-//                printf("%f ", spheroidal[i] * spheroidal[j]);
-//            }
-//            printf("\n");
-//        }
+        
+        // Prints prolate spheroidal
+        for(int i = 0; i < convolutionSize; i++)
+        {
+            for(int j = 0; j < convolutionSize; j++)
+            {
+                printf("%f ", spheroidal[i] * spheroidal[j]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+        
+        for(int i = 0; i < convolutionSize; i++)
+            printf("%f\n", spheroidal[i]);
         
         // Create Phase Screen
         createPhaseScreen(convolutionSize, screen, spheroidal, w, fov, wFullSupport);
@@ -195,14 +202,9 @@ void saveKernelToFile(char* filename, float w, int support, DoubleComplex* data)
     printf("FILE SAVED\n");
 }
 
-// Col, Row, Depth, Row Dimension
-int wTextureIndex(int x, int y, int z, int n)
-{
-    return ((z)*n*n) + ((y)*n) + (x);
-}
-
 void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
 {
+    printf("W Full support: %d\n", wFullSupport);
     int wHalfSupport = wFullSupport/2;
     double *nu = calloc(wFullSupport, sizeof(double));
     double *tempSpheroidal = calloc(wFullSupport, sizeof(double));
@@ -210,17 +212,19 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
     for(int i = 0; i < wFullSupport; i++)
     {
         nu[i] = fabs(calcSpheroidalShift(i, wFullSupport));
-//        printf("%f\n", nu[i]);
+        printf("%f\n", nu[i]);
     }
-//    printf("\n\n");
+    printf("\n\n");
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
     
     // Bind weights to middle
     for(int i = convHalf-wHalfSupport; i <= convHalf+wHalfSupport; i++)
+    {
         spheroidal[i] = tempSpheroidal[i-(convHalf-wHalfSupport)];
-
+    }
+    
     free(tempSpheroidal);
     free(nu);
 }
@@ -243,8 +247,6 @@ void createPhaseScreen(int convSize, DoubleComplex *screen, double* spheroidal, 
         lsq = l*l;
         taperY = spheroidal[iy+(convHalf-scalarHalf)];
         phase = 0.0;
-        
-        // printf("L: %f\n", l);
         
         for(int ix = 0; ix < scalarSupport; ix++)
         {
@@ -540,7 +542,7 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
 }
 
 float calcSpheroidalShift(int index, int width)
-{
+{   
     return -1.0 + index * getShift(width);
 }
 
