@@ -28,7 +28,7 @@ float wToMaxSupportRatio = 0.0;
 
 int main(int argc, char** argv)
 {   
-    numWPlanes = (int)(maxW * fabs(sin(cellsizeRad * (double)gridSize / 2.0)));
+    numWPlanes = 339; //(int)(maxW * fabs(sin(cellsizeRad * (double)gridSize / 2.0)));
     fieldOfViewDegrees = gridSize * cellsizeRad;
     wScale = pow(numWPlanes - 1, 2.0) / maxW;
     wToMaxSupportRatio = (kernelMaxFullSupport - kernelMinFullSupport) / maxW;
@@ -92,11 +92,11 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
                 newPoint = interpolateCubicWeight(neighbours, newPoint, i*4, origSupport, true);
                 interpolated[i] = newPoint;
                 
-                printf("[%f, %f] ", newPoint.yShift, newPoint.xShift);
+                //printf("[%f, %f] ", newPoint.yShift, newPoint.xShift);
 //                printf("%f %f %f %f %f\n", neighbours[0].xShift, neighbours[1].xShift, newPoint.xShift, neighbours[2].xShift, neighbours[3].xShift);
 //                printf("%f %f %f %f %f\n", neighbours[0].yShift, neighbours[1].yShift, newPoint.yShift, neighbours[2].yShift, neighbours[3].yShift);
             }
-            printf("\n");
+            //printf("\n");
 
             // printf("[X: %f, Y: %f] ", xShift, yShift);
             
@@ -105,7 +105,7 @@ void interpolateKernel(DoubleComplex *source, DoubleComplex* dest, int origSuppo
             int index = y * texSupport + x;
             dest[index] = (DoubleComplex) {.real = final.weight.real, .imaginary = final.weight.imaginary};
         }
-         printf("\n");
+         //printf("\n");
     }
 }
 
@@ -124,10 +124,14 @@ void createWProjectionPlanes(int convolutionSize, int numWPlanes, int textureSup
     // numWPlanes = 2;//numWPlanes-1;
     //int plane = numWPlanes-1;
     int plane = numWPlanes-1;
-    for(int iw = numWPlanes-1; iw < numWPlanes; iw++)
+    for(int iw = 0; iw < numWPlanes; iw++)
     {        
         // Calculate w term and w specific support size
         double w = iw * iw / wScale;
+        
+        float fresnel = w * ((0.5 * fov)*(0.5 * fov));
+        printf("CreateWTermLike: For w = %f, field of view = %f, fresnel number = %f\n", w, fov, fresnel);
+        
         int wFullSupport = calcWFullSupport(w, wToMaxSupportRatio, kernelMinFullSupport);
         // Calculate Prolate Spheroidal
         createScaledSpheroidal(spheroidal, wFullSupport, convHalf);
@@ -218,6 +222,12 @@ void createScaledSpheroidal(double *spheroidal, int wFullSupport, int convHalf)
         
     // Calculate curve from steps
     calcSpheroidalCurve(nu, tempSpheroidal, wFullSupport);
+    
+    // Zero out first weight
+    tempSpheroidal[0] = 0.0;
+    // Zero out last weight to balance spheroidal
+    if(wFullSupport % 2 != 0)
+        tempSpheroidal[wFullSupport-1] = 0.0;
     
     // Bind weights to middle
     for(int i = convHalf-wHalfSupport; i <= convHalf+wHalfSupport; i++)
@@ -543,7 +553,12 @@ void getBicubicNeighbours(int x, int y, InterpolationPoint *neighbours, int orig
 
 float calcSpheroidalShift(int index, int width)
 {   
-    return -1.0 + index * getShift(width);
+    // Even
+    if(width % 2 == 0)
+        return -1.0 + index * getShift(width);
+    // Odd
+    else
+        return -1.0 + index * getShift(width-1);
 }
 
 float calcInterpolateShift(int index, int width, float start)
